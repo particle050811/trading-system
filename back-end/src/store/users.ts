@@ -35,3 +35,7 @@ export function createUser(username: string, password: string): User {
   users.set(id, user)
   return user
 }
+
+for (const { username, password } of config.seedDevUsers) {
+  if (!findByUsername(username)) createUser(username, password)
+}
