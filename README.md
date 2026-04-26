@@ -8,11 +8,11 @@ Vue 3 + TypeScript 前端 / Node.js + Express + ws 后端 / 内存撮合引擎 /
 
 ## 关键架构决策
 
-1. **挂单簿用跳表 + 同价 FIFO 队列**：`Map<symbol, ProperSkipList<priceCents, Order[]>>`。跨价档跳表 O(log n) 排序，同价档 FIFO 数组保留时间优先；撮合走 `findEntriesFromMin/Max` 双向迭代器从最优档往外扫，撤单 `find(price)` 命中档位再 `splice`。直接用第三方 `proper-skip-list` 而非自己造，避免在双向迭代、概率层级这些细节上引入 bug。详见 PROMPTS.md §1。
+1. **挂单簿用"跳表 + 同价位双向链表"两层结构**：跳表按价格排序，每个价位下挂一条同价队列（双向链表，先到的在头部）。撮合从最优价档往外扫，撤单和 maker 出簿都是常数时间。两种结构选型刚好相反——**跳表装库**（`proper-skip-list`，自己写细节多容易出 bug）；**链表手写**（30 行写完，JS 生态没有侵入式链表的库，装一个外部库还得维护"订单 → 节点"反向查找表反而更绕）。链表前后指针挂在订单对象上，用 Symbol 作 key，不会被 JSON 序列化泄漏到 API 响应。详见 PROMPTS.md §1、§5。
 
-2. **后端金额一律存整数分（`priceCents`），不存任何派生量**：`Position` 只保留 `qty / totalCostCents / frozenQty` 三个整数字段，**不存均价**——均价是显示问题，让前端按需计算。摊销公式 `round(T*q/Q)` 在清仓时数学上恒为 0，跨周期无残留。整数化彻底规避浮点误差，从根上挡住"金融账目对不齐"。详见 PROMPTS.md §2。
+2. **后端金额一律存整数分，不存任何推导值**：浮点小数在金融账面上会累积误差，所以全部用"分"存。持仓只留三个整数字段（股数、总成本、冻结股数），**不存均价**——均价让前端按需计算。卖出按比例扣成本时，清仓那一笔数学上精确归零、跨周期不残留。详见 PROMPTS.md §2。
 
-3. **Pinia store 的 Map 走"整体替换快照"模式**：`s.value = new Map(s.value).set(k, v)`，不依赖 `reactive(Map)` 在不同 Vue 版本下的响应式覆盖。`market` / `orders` / `portfolio` 三个 store 统一用这个模式，意图直白——触发响应式的是赋值不是 `.set()`。详见 PROMPTS.md §4。
+3. **前端响应式 Map 走"整体替换"模式**：Vue 的 ref 包 Map 时，调内部 `.set()` 不会触发界面刷新，所以每次更新克隆一份新 Map 再赋值。行情、委托、持仓三个 store 都用这个写法——直接看代码就知道触发刷新的是赋值不是 `.set()`。详见 PROMPTS.md §4。
 
 ## 启动
 
@@ -43,7 +43,7 @@ cd front-end && npm install && npm run dev
 cd back-end && npm test
 ```
 
-vitest 共 24 个用例：撮合引擎 13 个（价格/时间优先、部分成交、taker 价格改善、自成交防护、撤单返还、清仓不变量）+ 跳表挂单簿 11 个（跨档排序、同价 FIFO、空档回收、双向迭代、买卖簿与多 symbol 隔离）。
+vitest 共 24 个用例：撮合 13 个（价格优先、时间优先、部分成交、买方价格改善、自成交防护、撤单返还、清仓不残留）+ 挂单簿 11 个（跨档排序、同价队列、空档回收、双向遍历、买卖簿与多股票隔离）。
 
 ## API
 
@@ -81,7 +81,7 @@ trading-system/
         ├── index.ts           HTTP + WS 同 server
         ├── routes/            auth / stocks / orders / portfolio
         ├── middleware/auth.ts JWT
-        ├── store/             users / orders (跳表挂单簿 + 单测) / stocks / reservation
+        ├── store/             users / orders (跳表挂单簿 + 单测) / dlist (同价 FIFO 链表) / stocks / reservation
         ├── engine/            matcher (+ 单测) / ticker
         ├── types/             第三方库类型补丁（proper-skip-list）
         └── ws/hub.ts          鉴权 + 行情广播 + 私有推送 + 重连快照
@@ -90,5 +90,5 @@ trading-system/
 ## 加分项
 
 - **Docker 一键启动**：`docker-compose.yml` + 多阶段 Dockerfile + nginx 反代。
-- **撮合引擎与跳表单测**：共 24 用例——撮合 13 个（`back-end/src/engine/matcher.test.ts`，覆盖价格/时间优先、部分成交、taker 价格改善、自成交防护、撤单返还、清仓不变量），跳表挂单簿 11 个（`back-end/src/store/orders.test.ts`，覆盖跨档排序、同价 FIFO、空档回收、双向迭代、买卖簿与多 symbol 隔离）。
-- **WS 断线重连**：客户端指数退避（1/2/4/8s，上限 10s）；服务端在每条新连接握手时下发 `snapshot`，重连后客户端直接对齐。
+- **撮合引擎与挂单簿单测**：共 24 用例——撮合 13 个（`back-end/src/engine/matcher.test.ts`，覆盖价格优先、时间优先、部分成交、买方价格改善、自成交防护、撤单返还、清仓不残留），挂单簿 11 个（`back-end/src/store/orders.test.ts`，覆盖跨档排序、同价队列、空档回收、双向遍历、买卖簿与多股票隔离）。
+- **WS 断线重连**：客户端断开后等 1/2/4/8 秒（上限 10 秒）逐步退让重连；服务端在每条新连接建立时下发一份完整快照（用户委托、成交、资金、持仓），客户端用快照整体覆盖本地状态，弥补断线期间错过的推送。

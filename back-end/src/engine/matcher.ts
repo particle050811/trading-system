@@ -15,6 +15,7 @@ import {
   spendFrozenCash,
 } from '../store/reservation.js'
 import { setLastPrice } from '../store/stocks.js'
+import { nextNode, unlinkNode } from '../store/dlist.js'
 
 export interface MatchResult {
   trades: Trade[]
@@ -45,13 +46,13 @@ export function matchOrder(taker: Order): MatchResult {
       taker.side === 'buy' ? price <= taker.priceCents : price >= taker.priceCents
     if (!crosses) break
 
-    // 同价档 FIFO 队列：游标 j 从队首推进，体现时间优先；同用户 maker 跳过不出簿，
-    // maker 完全成交则原地 splice，j 不前进。
-    let j = 0
-    while (taker.filledQty < taker.qty && j < level.length) {
-      const maker = level[j]!
+    // 同价档 FIFO 链表：node 从 head 推进，体现时间优先；同用户 maker 跳过不出簿，
+    // maker 完全成交则 O(1) 解链，node 走到下一节点。
+    let node = level.head
+    while (taker.filledQty < taker.qty && node) {
+      const maker = node
       if (maker.userId === taker.userId) {
-        j++
+        node = nextNode(maker)
         continue
       }
 
@@ -98,12 +99,18 @@ export function matchOrder(taker: Order): MatchResult {
       touched.add(maker)
       users.add(maker.userId)
 
+      // maker 完全成交：先记下下一节点再解链，避免 unlink 后丢失链路；
+      // maker 仍未填满则游标继续推进（理论上同价 FIFO 中只有 taker 填满才会停在 maker 上）。
       if (maker.status === 'filled') {
-        level.splice(j, 1) // maker 出簿，游标停在 j 不前进
+        const next = nextNode(maker)
+        unlinkNode(level, maker)
+        node = next
+      } else {
+        node = nextNode(maker)
       }
     }
 
-    if (level.length === 0) emptiedPrices.push(price)
+    if (level.size === 0) emptiedPrices.push(price)
     if (taker.filledQty === taker.qty) break outer
   }
 

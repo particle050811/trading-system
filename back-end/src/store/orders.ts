@@ -1,12 +1,19 @@
 import ProperSkipList from 'proper-skip-list'
 import type { Order, Trade } from '../types.js'
+import {
+  appendNode,
+  createLevel,
+  levelToArray,
+  unlinkNode,
+  type PriceLevel,
+} from './dlist.js'
 
-// 挂单簿改为「价格 → 同价 FIFO 队列」的跳表索引：
+// 挂单簿改为「价格 → 同价 FIFO 链表」的跳表索引：
 //   - 价格优先：跳表按 priceCents 排序，买盘从最大键往下走，卖盘从最小键往上走
-//   - 时间优先：同价位用数组 FIFO，先挂的排在前
+//   - 时间优先：同价位用侵入式双向链表 FIFO，head 是最早挂入的
 // 三方库 proper-skip-list 提供 O(log n) 的 upsert/find/delete 与
-// findEntriesFromMin / findEntriesFromMax 双向遍历。
-type PriceLevel = Order[]
+// findEntriesFromMin / findEntriesFromMax 双向遍历；
+// 链表把"撤单 / maker 完全成交出簿"从 O(n) 降到 O(1)。
 type Book = ProperSkipList<number, PriceLevel>
 
 const bids = new Map<string, Book>()
@@ -39,30 +46,29 @@ export function getBook(symbol: string, side: 'buy' | 'sell'): Order[] {
   const list = bookFor(symbol, side)
   const iter = side === 'buy' ? list.findEntriesFromMax() : list.findEntriesFromMin()
   const out: Order[] = []
-  for (const [, level] of iter) out.push(...level)
+  for (const [, level] of iter) out.push(...levelToArray(level))
   return out
 }
 
-// 把一笔未完全成交的订单挂入挂单簿：找到/新建价格档的 FIFO，追加到末尾。
+// 把一笔未完全成交的订单挂入挂单簿：找到/新建价格档的 FIFO，追加到链表尾部。O(log n)。
 export function insertResting(order: Order): void {
   const list = bookFor(order.symbol, order.side)
-  const level = list.find(order.priceCents)
-  if (level) {
-    level.push(order)
-  } else {
-    list.upsert(order.priceCents, [order])
+  let level = list.find(order.priceCents)
+  if (!level) {
+    level = createLevel()
+    list.upsert(order.priceCents, level)
   }
+  appendNode(level, order)
 }
 
 // 从挂单簿移除指定订单（撤单或完全成交时调用）。
-// 同价档内 splice 命中后若整档清空则删除该价格键，保证跳表结构紧凑。
+// 侵入式链表 O(1) 解链；解完若整档为空则从跳表里删除该价格键，保证结构紧凑。
 export function removeResting(order: Order): void {
   const list = bookFor(order.symbol, order.side)
   const level = list.find(order.priceCents)
   if (!level) return
-  const idx = level.indexOf(order)
-  if (idx >= 0) level.splice(idx, 1)
-  if (level.length === 0) list.delete(order.priceCents)
+  unlinkNode(level, order)
+  if (level.size === 0) list.delete(order.priceCents)
 }
 
 // 把新订单写入按 ID / 按用户两个索引，便于后续查询和按用户列表展示。
