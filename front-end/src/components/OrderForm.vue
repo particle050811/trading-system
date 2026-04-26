@@ -88,7 +88,7 @@ const totalLabel = computed(() => {
           :model-value="symbol"
           placeholder="请选择股票"
           style="width: 100%"
-          @update:model-value="(v) => emit('update:symbol', v)"
+          @update:model-value="(v: string) => emit('update:symbol', v)"
         >
           <el-option
             v-for="s in market.list"

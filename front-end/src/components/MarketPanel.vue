@@ -32,7 +32,7 @@ function rowClass({ row }: { row: { change: number } }) {
       :row-class-name="rowClass"
       highlight-current-row
       size="small"
-      @row-click="(row) => emit('select', row.symbol)"
+      @row-click="(row: { symbol: string }) => emit('select', row.symbol)"
     >
       <el-table-column prop="symbol" label="代码" width="100" />
       <el-table-column prop="name" label="名称" />

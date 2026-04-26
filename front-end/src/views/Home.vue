@@ -145,7 +145,7 @@ function logout(): void {
 }
 .grid {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 1.6fr 1fr;
   gap: 16px;
   align-items: start;
 }
