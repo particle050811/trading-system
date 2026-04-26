@@ -42,11 +42,15 @@ router.post('/', (req: AuthedRequest, res) => {
   if (side !== 'buy' && side !== 'sell') {
     return res.status(400).json({ message: 'side 必须为 buy 或 sell' })
   }
-  // 上限确保 priceCents * qty 不超出 Number.MAX_SAFE_INTEGER（约 9e15）。
-  // 单价上限 10 亿分（即 1000 万元）、数量上限 10 亿股，乘积最多 1e18 会溢出，
-  // 因此两者都钳制在 1e9 以内，给部分成交累加结算留出余量。
-  const MAX_PRICE_CENTS = 1_000_000_000
-  const MAX_QTY = 1_000_000_000
+  // 抗滥用硬护栏（不是精度论证）：
+  //   - 单价上限 100 万分 = 1 万元/股，远高于任何真实股票价格；
+  //   - 数量上限 100 万股/单，远高于任何零售单笔下单量；
+  //   - 乘积上限 10^12 cents，距 Number.MAX_SAFE_INTEGER (≈9e15) 仍有
+  //     3+ 个数量级余量，多笔部分成交累加也不会触及精度边界。
+  // 这条校验的目的是拒绝畸形/恶意输入（POST 一个 priceCents: 1e15
+  // 想撑爆服务），让上层异常路径返回 400 而不是悄悄落库或溢出。
+  const MAX_PRICE_CENTS = 1_000_000
+  const MAX_QTY = 1_000_000
   if (!Number.isInteger(priceCents) || priceCents <= 0 || priceCents > MAX_PRICE_CENTS) {
     return res.status(400).json({ message: 'priceCents 必须为正整数且不超过上限' })
   }

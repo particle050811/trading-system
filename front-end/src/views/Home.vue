@@ -46,6 +46,16 @@ onMounted(async () => {
   // 注册 WS 消息分发：按 type 路由到对应 store。
   unbind = onMessage((msg) => {
     switch (msg.type) {
+      case 'snapshot':
+        // 重连后服务端下发的完整快照：用它整体覆盖本地委托/成交/账户，
+        // 抹平连接断开期间错过的增量。
+        orders.applySnapshot({ orders: msg.orders, trades: msg.trades })
+        portfolio.applySnapshot({
+          cashCents: msg.cashCents,
+          frozenCashCents: msg.frozenCashCents,
+          positions: msg.positions,
+        })
+        break
       case 'quote':
         market.applyQuote(msg.stock)
         break

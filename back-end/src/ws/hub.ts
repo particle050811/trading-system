@@ -5,6 +5,7 @@ import { config } from '../config.js'
 import { findById } from '../store/users.js'
 import type { Order, Stock, Trade } from '../types.js'
 import { onTick } from '../engine/ticker.js'
+import { listUserOrders, listUserTrades } from '../store/orders.js'
 
 interface Client {
   ws: WebSocket
@@ -66,6 +67,9 @@ export function attachWs(server: http.Server): void {
     const client: Client = { ws, userId }
     addClient(client)
     send(ws, { type: 'hello', userId })
+    // 重连后同步最新状态：把当前用户的委托/成交/账户作为一次快照下发，
+    // 客户端用它整体覆盖本地 store，弥补连接断开期间错过的增量推送。
+    if (userId) sendSnapshot(ws, userId)
     ws.on('close', () => removeClient(client))
   })
 
@@ -103,6 +107,26 @@ export function pushOrder(userId: string, order: Order): void {
 // 给指定用户推送一笔成交（买卖双方各推一次）。
 export function pushTrade(userId: string, trade: Trade): void {
   sendToUser(userId, { type: 'trade', trade })
+}
+
+// 连接建立后向单一连接发送一次"完整快照"，用于断线重连后的状态对齐。
+// 包含：委托全列表、用户最近成交、账户资金 + 持仓。
+function sendSnapshot(ws: WebSocket, userId: string): void {
+  const u = findById(userId)
+  if (!u) return
+  send(ws, {
+    type: 'snapshot',
+    orders: listUserOrders(userId),
+    trades: listUserTrades(userId),
+    cashCents: u.cashCents,
+    frozenCashCents: u.frozenCashCents,
+    positions: Array.from(u.positions, ([symbol, p]) => ({
+      symbol,
+      qty: p.qty,
+      frozenQty: p.frozenQty,
+      totalCostCents: p.totalCostCents,
+    })),
+  })
 }
 
 // 给指定用户推送最新账户快照（资金 + 持仓），撮合/撤单结算后调用。

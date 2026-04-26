@@ -3,6 +3,7 @@
 //
 // 后端协议（见 back-end/src/ws/hub.ts）：
 //   { type: 'hello',    userId }
+//   { type: 'snapshot', orders, trades, cashCents, frozenCashCents, positions }
 //   { type: 'quote',    stock }
 //   { type: 'order',    order }
 //   { type: 'trade',    trade }
@@ -10,8 +11,18 @@
 
 import type { Order, Stock, Trade } from '@/types'
 
-type WsMessage =
+type Position = { symbol: string; qty: number; frozenQty: number; totalCostCents: number }
+
+export type WsMessage =
   | { type: 'hello'; userId: string | null }
+  | {
+      type: 'snapshot'
+      orders: Order[]
+      trades: Trade[]
+      cashCents: number
+      frozenCashCents: number
+      positions: Position[]
+    }
   | { type: 'quote'; stock: Stock }
   | { type: 'order'; order: Order }
   | { type: 'trade'; trade: Trade }
@@ -19,7 +30,7 @@ type WsMessage =
       type: 'portfolio'
       cashCents: number
       frozenCashCents: number
-      positions: Array<{ symbol: string; qty: number; frozenQty: number; totalCostCents: number }>
+      positions: Position[]
     }
 
 type Handler = (msg: WsMessage) => void

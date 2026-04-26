@@ -1,11 +1,16 @@
 import { config } from '../config.js'
 import { listStocks } from './stocks.js'
 
+// 持仓只存三个**精确整数**字段，不存任何派生量（如均价、市值、浮盈）。
+// 显示均价 = totalCostCents / qty 由前端按显示精度自行四舍五入计算，
+// 后端从不保存任何不精确的值。
 export interface Position {
+  // 持有的总股数（整数）。
   qty: number
-  // 当前持仓的总成本（单位：分）。均价 = totalCostCents / qty，仅在买入时更新。
+  // 当前持仓的总成本（整数分）。买入时累加（receiveShares），卖出时按
+  // round(totalCostCents * q / qty) 的整数化方式扣减（deliverShares）。
   totalCostCents: number
-  // 被未成交卖单冻结的股数。可用持仓 = qty - frozenQty。
+  // 被未成交卖单冻结的股数（整数）。可用持仓 = qty - frozenQty。
   frozenQty: number
 }
 

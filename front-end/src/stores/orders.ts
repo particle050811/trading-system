@@ -33,6 +33,15 @@ export const useOrdersStore = defineStore('orders', () => {
     orderMap.value = m
   }
 
+  // WS snapshot 事件（断线重连后由后端主动下发）：用快照整体替换本地
+  // 委托和成交，弥补连接断开期间错过的增量推送。
+  function applySnapshot(snap: { orders: Order[]; trades: Trade[] }): void {
+    const m = new Map<string, Order>()
+    for (const o of snap.orders) m.set(o.id, o)
+    orderMap.value = m
+    trades.value = snap.trades
+  }
+
   // WS trade 事件：插入到首位，最多保留 200 条避免无限增长。
   function applyTrade(t: Trade): void {
     // 同一个 trade 可能买卖双方各推一次——用 id 去重。
@@ -52,6 +61,7 @@ export const useOrdersStore = defineStore('orders', () => {
     trades,
     load,
     applyOrder,
+    applySnapshot,
     applyTrade,
     reset,
   }

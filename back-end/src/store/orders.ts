@@ -100,3 +100,14 @@ export function listRecentTrades(limit = 50): Trade[] {
 export function listUserTrades(userId: string, limit = 50): Trade[] {
   return (tradesByUser.get(userId) ?? []).slice(0, limit)
 }
+
+// 仅供单测用：在 beforeEach 里把全部内存状态清空，避免用例之间相互污染。
+// 不导出给业务路径调用——名字带 __ 前缀作为肉眼可见的提示。
+export function __resetForTests(): void {
+  bids.clear()
+  asks.clear()
+  ordersById.clear()
+  ordersByUser.clear()
+  trades.length = 0
+  tradesByUser.clear()
+}
