@@ -2,7 +2,7 @@ import { nanoid } from 'nanoid'
 import type { Order, Trade } from '../types.js'
 import { findById } from '../store/users.js'
 import {
-  getBook,
+  getBookList,
   insertResting,
   recordTrade,
   removeResting,
@@ -30,78 +30,84 @@ export interface MatchResult {
 // 在扣款前先 releaseCash 退回到可用资金。
 export function matchOrder(taker: Order): MatchResult {
   const opposite = taker.side === 'buy' ? 'sell' : 'buy'
-  const book = getBook(taker.symbol, opposite)
+  const book = getBookList(taker.symbol, opposite)
+  // 买 taker 走对手卖盘，从最低价升序遍历；卖 taker 走对手买盘，从最高价降序遍历。
+  const iter = taker.side === 'buy' ? book.findEntriesFromMin() : book.findEntriesFromMax()
   const trades: Trade[] = []
   const touched = new Set<Order>([taker])
   const users = new Set<string>([taker.userId])
   const takerUser = findById(taker.userId)!
+  // 跳表迭代过程中删除当前键会破坏 next/prev 指针，留到循环结束统一清理。
+  const emptiedPrices: number[] = []
 
-  // 用游标遍历挂单簿：遇到同用户的 maker 可以跳过而不出簿（防自成交）。
-  // 簿是有序的，一旦遇到价格不再交叉就可以直接停止。
-  let i = 0
-  while (taker.filledQty < taker.qty && i < book.length) {
-    const maker = book[i]!
+  outer: for (const [price, level] of iter) {
     const crosses =
-      taker.side === 'buy'
-        ? maker.priceCents <= taker.priceCents
-        : maker.priceCents >= taker.priceCents
+      taker.side === 'buy' ? price <= taker.priceCents : price >= taker.priceCents
     if (!crosses) break
-    if (maker.userId === taker.userId) {
-      i++
-      continue
+
+    // 同价档 FIFO 队列：游标 j 从队首推进，体现时间优先；同用户 maker 跳过不出簿，
+    // maker 完全成交则原地 splice，j 不前进。
+    let j = 0
+    while (taker.filledQty < taker.qty && j < level.length) {
+      const maker = level[j]!
+      if (maker.userId === taker.userId) {
+        j++
+        continue
+      }
+
+      const fillQty = Math.min(taker.qty - taker.filledQty, maker.qty - maker.filledQty)
+      const fillPrice = maker.priceCents
+      const makerUser = findById(maker.userId)!
+
+      if (taker.side === 'buy') {
+        const slack = (taker.priceCents - fillPrice) * fillQty
+        if (slack > 0) releaseCash(takerUser, slack)
+        spendFrozenCash(takerUser, fillPrice * fillQty)
+        receiveShares(takerUser, taker.symbol, fillQty, fillPrice * fillQty)
+        deliverShares(makerUser, taker.symbol, fillQty)
+        makerUser.cashCents += fillPrice * fillQty
+      } else {
+        spendFrozenCash(makerUser, fillPrice * fillQty)
+        receiveShares(makerUser, taker.symbol, fillQty, fillPrice * fillQty)
+        deliverShares(takerUser, taker.symbol, fillQty)
+        takerUser.cashCents += fillPrice * fillQty
+      }
+
+      taker.filledQty += fillQty
+      maker.filledQty += fillQty
+      taker.status = taker.filledQty === taker.qty ? 'filled' : 'partial'
+      maker.status = maker.filledQty === maker.qty ? 'filled' : 'partial'
+
+      const buyOrder = taker.side === 'buy' ? taker : maker
+      const sellOrder = taker.side === 'buy' ? maker : taker
+      const trade: Trade = {
+        id: nanoid(),
+        symbol: taker.symbol,
+        priceCents: fillPrice,
+        qty: fillQty,
+        buyOrderId: buyOrder.id,
+        sellOrderId: sellOrder.id,
+        buyUserId: buyOrder.userId,
+        sellUserId: sellOrder.userId,
+        ts: Date.now(),
+      }
+      trades.push(trade)
+      recordTrade(trade)
+      setLastPrice(taker.symbol, fillPrice)
+
+      touched.add(maker)
+      users.add(maker.userId)
+
+      if (maker.status === 'filled') {
+        level.splice(j, 1) // maker 出簿，游标停在 j 不前进
+      }
     }
 
-    const fillQty = Math.min(taker.qty - taker.filledQty, maker.qty - maker.filledQty)
-    const fillPrice = maker.priceCents
-    const makerUser = findById(maker.userId)!
-
-    if (taker.side === 'buy') {
-      // 买方是 taker，卖方是 maker。
-      const slack = (taker.priceCents - fillPrice) * fillQty
-      if (slack > 0) releaseCash(takerUser, slack)
-      spendFrozenCash(takerUser, fillPrice * fillQty)
-      receiveShares(takerUser, taker.symbol, fillQty, fillPrice * fillQty)
-      deliverShares(makerUser, taker.symbol, fillQty)
-      makerUser.cashCents += fillPrice * fillQty
-    } else {
-      // 买方是 maker，卖方是 taker。
-      spendFrozenCash(makerUser, fillPrice * fillQty)
-      receiveShares(makerUser, taker.symbol, fillQty, fillPrice * fillQty)
-      deliverShares(takerUser, taker.symbol, fillQty)
-      takerUser.cashCents += fillPrice * fillQty
-    }
-
-    taker.filledQty += fillQty
-    maker.filledQty += fillQty
-    taker.status = taker.filledQty === taker.qty ? 'filled' : 'partial'
-    maker.status = maker.filledQty === maker.qty ? 'filled' : 'partial'
-
-    const buyOrder = taker.side === 'buy' ? taker : maker
-    const sellOrder = taker.side === 'buy' ? maker : taker
-    const trade: Trade = {
-      id: nanoid(),
-      symbol: taker.symbol,
-      priceCents: fillPrice,
-      qty: fillQty,
-      buyOrderId: buyOrder.id,
-      sellOrderId: sellOrder.id,
-      buyUserId: buyOrder.userId,
-      sellUserId: sellOrder.userId,
-      ts: Date.now(),
-    }
-    trades.push(trade)
-    recordTrade(trade)
-    setLastPrice(taker.symbol, fillPrice)
-
-    touched.add(maker)
-    users.add(maker.userId)
-
-    if (maker.status === 'filled') {
-      book.splice(i, 1) // maker 完全成交后出簿；游标停在 i 不前进
-    }
-    // 部分成交的 maker 保持原位置；游标仅在上面的同用户跳过分支前进，
-    // 否则循环依靠"价格不再交叉"或"簿空"来终止。
+    if (level.length === 0) emptiedPrices.push(price)
+    if (taker.filledQty === taker.qty) break outer
   }
+
+  for (const p of emptiedPrices) book.delete(p)
 
   if (taker.filledQty < taker.qty) {
     insertResting(taker)

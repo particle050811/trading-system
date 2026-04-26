@@ -1,9 +1,16 @@
+import ProperSkipList from 'proper-skip-list'
 import type { Order, Trade } from '../types.js'
 
-// 按股票代码分别维护的挂单簿。买盘按价格降序、卖盘按价格升序；
-// 同价位按 createdAt 升序（时间优先）。
-const bids = new Map<string, Order[]>()
-const asks = new Map<string, Order[]>()
+// 挂单簿改为「价格 → 同价 FIFO 队列」的跳表索引：
+//   - 价格优先：跳表按 priceCents 排序，买盘从最大键往下走，卖盘从最小键往上走
+//   - 时间优先：同价位用数组 FIFO，先挂的排在前
+// 三方库 proper-skip-list 提供 O(log n) 的 upsert/find/delete 与
+// findEntriesFromMin / findEntriesFromMax 双向遍历。
+type PriceLevel = Order[]
+type Book = ProperSkipList<number, PriceLevel>
+
+const bids = new Map<string, Book>()
+const asks = new Map<string, Book>()
 
 const ordersById = new Map<string, Order>()
 const ordersByUser = new Map<string, Order[]>()
@@ -11,46 +18,51 @@ const ordersByUser = new Map<string, Order[]>()
 const trades: Trade[] = []
 const tradesByUser = new Map<string, Trade[]>()
 
-function bookFor(symbol: string, side: 'buy' | 'sell'): Order[] {
+function bookFor(symbol: string, side: 'buy' | 'sell'): Book {
   const map = side === 'buy' ? bids : asks
-  let arr = map.get(symbol)
-  if (!arr) {
-    arr = []
-    map.set(symbol, arr)
+  let list = map.get(symbol)
+  if (!list) {
+    list = new ProperSkipList<number, PriceLevel>()
+    map.set(symbol, list)
   }
-  return arr
+  return list
 }
 
-// 取指定股票、指定方向的挂单簿数组（按价格优先 + 时间优先排好序）。
-export function getBook(symbol: string, side: 'buy' | 'sell'): Order[] {
+// 取指定股票/方向的挂单簿底层跳表，撮合引擎按价格优先方向遍历。
+export function getBookList(symbol: string, side: 'buy' | 'sell'): Book {
   return bookFor(symbol, side)
 }
 
-// 把一笔未完全成交的订单挂入挂单簿，使用二分插入维持排序不变量。
+// 兼容原 API：把跳表内全部挂单按「价格优先 + 时间优先」展开成数组，
+// 仅供单测或公开查询使用，撮合热路径请走 getBookList。
+export function getBook(symbol: string, side: 'buy' | 'sell'): Order[] {
+  const list = bookFor(symbol, side)
+  const iter = side === 'buy' ? list.findEntriesFromMax() : list.findEntriesFromMin()
+  const out: Order[] = []
+  for (const [, level] of iter) out.push(...level)
+  return out
+}
+
+// 把一笔未完全成交的订单挂入挂单簿：找到/新建价格档的 FIFO，追加到末尾。
 export function insertResting(order: Order): void {
-  const arr = bookFor(order.symbol, order.side)
-  // 排序规则：买盘价高优先、卖盘价低优先；同价按 createdAt 升序作为次序。
-  const cmp = (a: Order, b: Order) => {
-    if (a.priceCents !== b.priceCents) {
-      return order.side === 'buy' ? b.priceCents - a.priceCents : a.priceCents - b.priceCents
-    }
-    return a.createdAt - b.createdAt
+  const list = bookFor(order.symbol, order.side)
+  const level = list.find(order.priceCents)
+  if (level) {
+    level.push(order)
+  } else {
+    list.upsert(order.priceCents, [order])
   }
-  let lo = 0
-  let hi = arr.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (cmp(arr[mid]!, order) <= 0) lo = mid + 1
-    else hi = mid
-  }
-  arr.splice(lo, 0, order)
 }
 
 // 从挂单簿移除指定订单（撤单或完全成交时调用）。
+// 同价档内 splice 命中后若整档清空则删除该价格键，保证跳表结构紧凑。
 export function removeResting(order: Order): void {
-  const arr = bookFor(order.symbol, order.side)
-  const idx = arr.indexOf(order)
-  if (idx >= 0) arr.splice(idx, 1)
+  const list = bookFor(order.symbol, order.side)
+  const level = list.find(order.priceCents)
+  if (!level) return
+  const idx = level.indexOf(order)
+  if (idx >= 0) level.splice(idx, 1)
+  if (level.length === 0) list.delete(order.priceCents)
 }
 
 // 把新订单写入按 ID / 按用户两个索引，便于后续查询和按用户列表展示。
