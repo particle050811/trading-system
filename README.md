@@ -2,83 +2,82 @@
 
 Vue 3 + TypeScript 前端 / Node.js + Express + ws 后端 / 内存撮合引擎 / WebSocket 实时推送。
 
-## 启动方式
+关键架构决策与 AI 协作记录见 [PROMPTS.md](./PROMPTS.md)。
 
-需要分别启动前后端（两个终端）。
+## 启动
 
-### 后端
-
-```bash
-cd back-end
-npm install
-npm run dev
-```
-
-监听 `http://localhost:3000`，WebSocket 在 `ws://localhost:3000/ws`。
-
-### 前端
+### Docker 一键启动（推荐）
 
 ```bash
-cd front-end
-npm install
-npm run dev
+docker compose up --build
 ```
 
-访问 `http://localhost:5173`。Vite 已配置代理：`/api/*` → `:3000`，`/ws` → `ws://:3000/ws`，前端代码使用相对路径，无 CORS。
+访问 [http://localhost:8080](http://localhost:8080)。前端 nginx 反代 `/api` 与 `/ws` 到 `backend:3000`。
+
+种子用户：`root/123456`、`alice/alice`、`bob/bob`，每人 100 万虚拟币 + 每只股票 1000 股。
+
+### 本地开发
+
+```bash
+# 终端 1
+cd back-end && npm install && npm run dev
+# 终端 2
+cd front-end && npm install && npm run dev
+```
+
+后端 `:3000` 同时承载 REST 与 WS；前端 `:5173`（Vite 已配 `/api` `/ws` 代理）。
+
+### 测试
+
+```bash
+cd back-end && npm test
+```
+
+vitest 撮合引擎单测 13 个用例，覆盖价格/时间优先、部分成交、taker 价格改善、自成交防护、撤单返还、清仓不变量。
+
+## API
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/health` | 健康检查 |
+| POST | `/api/auth/register` | 注册（自动赠送 100 万） |
+| POST | `/api/auth/login` | 登录 |
+| GET | `/api/stocks` | 行情列表 |
+| GET | `/api/orders` | 当前用户委托 |
+| GET | `/api/orders/trades` | 当前用户成交 |
+| POST | `/api/orders` | 下限价单 |
+| DELETE | `/api/orders/:id` | 撤单 |
+| GET | `/api/portfolio/me` | 资金 + 持仓 |
+| GET | `/api/portfolio/trades` | 全市场最近成交 |
+| WS | `/ws?token=…` | `hello` / `snapshot` / `quote` / `order` / `trade` / `portfolio` |
 
 ## 目录结构
 
 ```
 trading-system/
-├── front-end/                    Vue 3 + TS + Vite + Element Plus + Pinia + Vue Router
-│   ├── src/
-│   │   ├── api/http.ts           axios 实例 + 鉴权拦截器
-│   │   ├── router/index.ts       路由 + 登录守卫
-│   │   ├── stores/user.ts        Pinia 用户态(token 持久化到 localStorage)
-│   │   ├── views/
-│   │   │   ├── Login.vue         登录 / 注册
-│   │   │   └── Home.vue          主页(行情/交易面板待实现)
-│   │   ├── types/                类型定义
-│   │   ├── utils/                工具
-│   │   ├── App.vue
-│   │   ├── main.ts
-│   │   └── style.css
-│   ├── vite.config.ts            @ 别名 + /api、/ws 代理
-│   └── tsconfig.app.json
-│
-└── back-end/                     Express + ws + TypeScript
-    ├── src/
-    │   ├── index.ts              入口(HTTP + WebSocket server)
-    │   ├── config.ts             端口、JWT 密钥、初始资金
-    │   ├── routes/
-    │   │   └── auth.ts           登录 / 注册
-    │   ├── middleware/
-    │   │   └── auth.ts           JWT 校验 + 签发
-    │   ├── store/
-    │   │   └── users.ts          用户内存仓(含资金、持仓)
-    │   ├── engine/               撮合引擎(待实现)
-    │   ├── ws/                   WebSocket 推送(待实现)
-    │   └── types/
-    └── tsconfig.json
+├── docker-compose.yml
+├── PROMPTS.md
+├── front-end/                 Vue 3 + TS + Vite + Element Plus + Pinia
+│   ├── Dockerfile / nginx.conf
+│   └── src/
+│       ├── api/               http (axios) / ws (指数退避重连) / orders / portfolio / stocks
+│       ├── components/        MarketPanel / OrderForm / OrdersPanel / PortfolioPanel / TradesPanel
+│       ├── stores/            market / orders / portfolio / publicTrades / user
+│       ├── views/             Login / Home
+│       └── router/            登录守卫
+└── back-end/                  Express + ws + TypeScript
+    ├── Dockerfile
+    └── src/
+        ├── index.ts           HTTP + WS 同 server
+        ├── routes/            auth / stocks / orders / portfolio
+        ├── middleware/auth.ts JWT
+        ├── store/             users / orders / stocks / reservation
+        ├── engine/            matcher (+ test) / ticker
+        └── ws/hub.ts          鉴权 + 行情广播 + 私有推送 + 重连快照
 ```
 
-## 已实现 API
+## 加分项
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/health` | 健康检查 |
-| POST | `/api/auth/register` | 注册，返回 `{ token, username }`，自动赠送 100 万初始资金 |
-| POST | `/api/auth/login` | 登录 |
-| WS | `/ws` | 连接后接收 `{ type: "hello" }`(后续会推送行情/委托/持仓变更) |
-
-## 待实现
-
-- [ ] 行情看板(≥3 支股票，每秒随机波动)
-- [ ] 撮合引擎(限价单，价格优先 + 时间优先)
-- [ ] 交易面板(下单、委托列表、持仓列表)
-- [ ] 成交记录
-- [ ] WebSocket 行情 / 委托 / 持仓 / 成交推送
-
-## 关键架构决策
-
-待补充(完成核心功能后总结 2~3 条)。
+- **Docker 一键启动**：`docker-compose.yml` + 多阶段 Dockerfile + nginx 反代。
+- **撮合引擎单测**：13 用例，详见 `back-end/src/engine/matcher.test.ts`。
+- **WS 断线重连**：客户端指数退避（1/2/4/8s，上限 10s）；服务端在每条新连接握手时下发 `snapshot`，重连后客户端直接对齐。
