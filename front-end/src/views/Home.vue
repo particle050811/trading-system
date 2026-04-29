@@ -9,6 +9,7 @@ import { usePortfolioStore } from '@/stores/portfolio'
 import { useOrdersStore } from '@/stores/orders'
 import { usePublicTradesStore } from '@/stores/publicTrades'
 import { connectWs, disconnectWs, onMessage } from '@/api/ws'
+import { notifyTrade, resetTradeNotifier } from '@/utils/tradeNotifier'
 import MarketPanel from '@/components/MarketPanel.vue'
 import OrderForm from '@/components/OrderForm.vue'
 import OrdersPanel from '@/components/OrdersPanel.vue'
@@ -46,6 +47,10 @@ onMounted(async () => {
   // 注册 WS 消息分发：按 type 路由到对应 store。
   unbind = onMessage((msg) => {
     switch (msg.type) {
+      case 'hello':
+        // 后端首条消息回填当前用户 id；用于成交通知判断买卖方是否是自己。
+        if (msg.userId) user.setUserId(msg.userId)
+        break
       case 'snapshot':
         // 重连后服务端下发的完整快照：用它整体覆盖本地委托/成交/账户，
         // 抹平连接断开期间错过的增量。
@@ -55,6 +60,9 @@ onMounted(async () => {
           frozenCashCents: msg.frozenCashCents,
           positions: msg.positions,
         })
+        // 快照里的成交是历史事件，不应弹通知；用 silent 仅把 id 灌入去重集合，
+        // 后续若同 id 再次推送（边界场景）也不会重弹。
+        for (const t of msg.trades) notifyTrade({ trade: t, currentUserId: user.userId, silent: true })
         break
       case 'quote':
         market.applyQuote(msg.stock)
@@ -65,6 +73,7 @@ onMounted(async () => {
       case 'trade':
         orders.applyTrade(msg.trade)
         publicTrades.applyTrade(msg.trade)
+        notifyTrade({ trade: msg.trade, currentUserId: user.userId })
         break
       case 'portfolio':
         portfolio.applySnapshot({
@@ -87,6 +96,7 @@ onBeforeUnmount(() => {
 function logout(): void {
   publicTrades.stop()
   disconnectWs()
+  resetTradeNotifier()
   market.reset()
   portfolio.reset()
   orders.reset()
